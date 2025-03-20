@@ -1,0 +1,185 @@
+---
+version: '3' 
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.4
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - '2181:2181'
+    networks: 
+      - expensetracker
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.4
+    container_name: kafka    
+    depends_on:
+      - zookeeper
+    ports:
+      - '9092:9092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks: 
+      - expensetracker 
+
+  mysql:
+    image: mysql:8.3.0
+    container_name: mysql-8.3.0
+    restart: always
+    environment:
+      MYSQL_ROOT_USER: root
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: test
+      MYSQL_PASSWORD: root
+    ports:
+      - '3306:3306'
+    expose:
+      - '3306'
+    volumes:
+      - db_data:/var/lib/mysql
+    networks: 
+      - expensetracker
+
+  user-service:
+    build:
+      context: ./ujars
+      dockerfile: Dockerfile
+    container_name: user-service
+    ports:
+      - '8081:8081'
+    depends_on:
+      - kafka
+      - mysql
+      - traefik
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: userservice
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.user-router.entrypoints=web"
+      - "traefik.http.routers.user-router.rule=PathPrefix(`/api/v1/user`)"
+      - "traefik.http.services.user-service.loadbalancer.server.port=8081"
+      - "traefik.http.routers.user-router.middlewares=auth-middleware@file"
+    networks: 
+      - expensetracker
+
+  auth-service:
+    build:
+      context: ./ajars
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - '8080:8080'
+    depends_on:
+      - kafka
+      - mysql
+      - traefik
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: authservice
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth-router.entrypoints=web"
+      - "traefik.http.routers.auth-router.rule=PathPrefix(`/api/v1/auth`) || PathPrefix(`/api/v1/password`) || PathPrefix(`/auth/v1/ping`) || PathPrefix(`/api/v1/token`)"
+      - "traefik.http.services.auth-service.loadbalancer.server.port=8080"
+  
+    networks: 
+      - expensetracker  
+
+  expense-service:
+    build:
+      context: ./esjars
+      dockerfile: Dockerfile
+    container_name: expense-service
+    ports:
+      - '8082:8082'
+    depends_on:
+      - kafka
+      - mysql
+      - traefik
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: expenseservice
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.expense-router.entrypoints=web"
+      - "traefik.http.routers.expense-router.rule=PathPrefix(`/api/v1/expenses`)"
+      - "traefik.http.services.expense-service.loadbalancer.server.port=8082"
+      - "traefik.http.routers.expense-router.middlewares=auth-middleware@file"
+    networks: 
+      - expensetracker
+
+  ds-service:
+    image: ds-service
+    container_name: ds-service
+    ports: 
+      - '8010:8010'
+    environment:
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+      OPENAI_API_KEY: zzlYsNbNJix3PZrwjIhUDJq6rWcu7DiT
+    depends_on:
+      - kafka
+      - mysql
+      - expense-service
+      - user-service
+      - auth-service
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ds-router.entrypoints=web"
+      - "traefik.http.routers.ds-router.rule=PathPrefix(`/api/v1/data-extract`)"
+      - "traefik.http.services.ds-service.loadbalancer.server.port=8010"
+      - "traefik.http.routers.ds-router.middlewares=auth-middleware@file"
+    networks:
+      - expensetracker
+
+  traefik:
+    image: "traefik:v2.9"
+    container_name: "traefik"
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.traefik.address=:8091"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+    ports:
+      - "8090:8090"
+      - "80:80"
+      - "8091:8091" # Traefik dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./dynamic.yml:/etc/traefik/dynamic.yml:ro"
+    networks:
+      - expensetracker
+
+
+networks:
+  expensetracker:
+    driver: bridge
+ 
+volumes:
+  db_data:
